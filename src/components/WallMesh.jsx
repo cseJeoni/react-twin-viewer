@@ -1,34 +1,65 @@
+// src/components/WallMesh.jsx
 import React, { useMemo } from 'react'
 import * as THREE from 'three'
 
-/**
- * props:
- *  - data: { outer: number[][], inner: number[][] }
- *  - wallHeight: number (기본 20)
- * 결과:
- *  - 벽: outer + hole(inner) Extrude → 흰색
- *  - 바닥: inner Shape → #C5DCBF
- */
 export default function WallMesh({ data, wallHeight = 20 }) {
-  const outerSrc = Array.isArray(data?.outer) ? data.outer : []
-  const innerSrc = Array.isArray(data?.inner) ? data.inner : []
-  if (outerSrc.length < 3 || innerSrc.length < 3) return null
+  let outerSrc = Array.isArray(data?.outer) ? data.outer : null
+  let innerSrc = Array.isArray(data?.inner) ? data.inner : null
+
+  // 폴백: 생성 스크립트가 폴리곤 리스트를 줄 때(구형 포맷)
+  if (!outerSrc || !innerSrc) {
+    if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+      const polys = data
+      const area = (pts) => {
+        if (!pts || pts.length < 3) return 0
+        let s = 0
+        for (let i = 0; i < pts.length; i++) {
+          const [x1, y1] = pts[i]
+          const [x2, y2] = pts[(i + 1) % pts.length]
+          s += x1 * y2 - y1 * x2
+        }
+        return Math.abs(s) * 0.5
+      }
+      // 가장 큰 폴리곤을 inner로
+      let maxA = -1, maxIdx = -1
+      for (let i = 0; i < polys.length; i++) {
+        const a = area(polys[i])
+        if (a > maxA) { maxA = a; maxIdx = i }
+      }
+      if (maxIdx >= 0) {
+        innerSrc = polys[maxIdx]
+        // 바운딩 박스로 outer 생성(약간 margin)
+        let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity
+        for (const [x,y] of innerSrc) {
+          if (x < minX) minX = x
+          if (y < minY) minY = y
+          if (x > maxX) maxX = x
+          if (y > maxY) maxY = y
+        }
+        const m = 2 // margin px
+        outerSrc = [
+          [minX - m, minY - m],
+          [maxX + m, minY - m],
+          [maxX + m, maxY + m],
+          [minX - m, maxY + m],
+        ]
+      }
+    }
+  }
+
+  if (!outerSrc || !innerSrc || outerSrc.length < 3 || innerSrc.length < 3) return null
 
   const toVec2 = pts => pts.map(([x, y]) => new THREE.Vector2(x, -y))
   const ensureCCW = v2 => (THREE.ShapeUtils.isClockWise(v2) ? v2.slice().reverse() : v2)
   const ensureCW  = v2 => (THREE.ShapeUtils.isClockWise(v2) ? v2 : v2.slice().reverse())
 
   const { wallGeom, floorGeom } = useMemo(() => {
-    // 외곽 CCW, 구멍 CW
     const outer = ensureCCW(toVec2(outerSrc))
     const innerCW = ensureCW(toVec2(innerSrc))
 
     const wallShape = new THREE.Shape(outer)
     wallShape.holes.push(new THREE.Path(innerCW))
-    const wallGeom = new THREE.ExtrudeGeometry(wallShape, {
-      depth: wallHeight,
-      bevelEnabled: false
-    })
+    const wallGeom = new THREE.ExtrudeGeometry(wallShape, { depth: wallHeight, bevelEnabled: false })
 
     const innerCCW = ensureCCW(toVec2(innerSrc))
     const floorShape = new THREE.Shape(innerCCW)
@@ -39,12 +70,9 @@ export default function WallMesh({ data, wallHeight = 20 }) {
 
   return (
     <group>
-      {/* 벽 = 흰색 */}
       <mesh geometry={wallGeom} castShadow receiveShadow>
         <meshStandardMaterial color="#ffffff" />
       </mesh>
-
-      {/* 바닥 = #C5DCBF (z-fighting 방지 약간 띄움) */}
       <mesh geometry={floorGeom} position={[0, 0, 0.1]} renderOrder={1}>
         <meshStandardMaterial
           color="#C5DCBF"

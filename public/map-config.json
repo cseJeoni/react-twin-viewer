@@ -1,0 +1,7 @@
+{
+    "active": "burger_example",
+    "profiles": {
+      "burger_example": { "yaml": "maps/burger_example_map.yaml" }
+    }
+}
+  
