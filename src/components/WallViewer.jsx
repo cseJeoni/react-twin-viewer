@@ -1,26 +1,37 @@
+// src/components/WallViewer.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
-// 서버 IP를 직접 쓰거나, 현재 호스트 자동 사용
-const WS_URL = `ws://192.168.219.149:8000/ws`
+const WS_URL = `ws://192.168.219.187:8000/ws`
+
+// origin이 배열([x,y,theta])이든 객체({x0,y0})든 처리
+function getOrigin(metaOrigin){
+  if (Array.isArray(metaOrigin)) return { x0: metaOrigin[0], y0: metaOrigin[1] }
+  if (metaOrigin && typeof metaOrigin === 'object') return { x0: metaOrigin.x0, y0: metaOrigin.y0 }
+  return { x0: 0, y0: 0 }
+}
 
 // meters -> pixels (이미지 좌표: x 오른쪽+, y 아래쪽+)
 function metersToPixels({ x_m, y_m, origin, resolution }) {
-  const x0 = Array.isArray(origin) ? origin[0] : origin.x0
-  const y0 = Array.isArray(origin) ? origin[1] : origin.y0
+  const { x0, y0 } = getOrigin(origin)
   const px = (x_m - x0) / resolution
   const py_img = (y_m - y0) / resolution
   return { px, py_img }
 }
 
-// 90° CCW 회전: (x,y_down) → (x',y'_down)
+// 90° CCW 회전 (이미지 좌표계 기준)
 function rotateCCW90({ px, py_img }, widthPx) {
-  const xPrime = py_img
-  const yPrime_down = (widthPx - 1 - px)
-  return { xPrime, yPrime_down }
+  return { xPrime: py_img, yPrime_down: (widthPx - 1 - px) }
+}
+
+// 아핀 적용: (x,y,1)→(xi,yi)  (이미지 좌표계)
+function applyAffine(T, x, y) {
+  const xi = T[0][0]*x + T[0][1]*y + T[0][2]
+  const yi = T[1][0]*x + T[1][1]*y + T[1][2]
+  return { xi, yi }
 }
 
 export default function WallViewer() {
@@ -29,36 +40,36 @@ export default function WallViewer() {
   const [pose, setPose] = useState(null)
   const [err, setErr] = useState(null)
   const controlsRef = useRef(null)
+  const wsRef = useRef(null)
 
-  // JSON 로드
+  // wall_shell.json + meta.json 로드
   useEffect(() => {
     Promise.all([
       fetch('/wall_shell.json').then(r => { if (!r.ok) throw new Error('wall_shell.json not found'); return r.json() }),
       fetch('/meta.json').then(r => { if (!r.ok) throw new Error('meta.json not found'); return r.json() })
     ])
-      .then(([shape, metaJson]) => { setShapeData(shape); setMeta(metaJson) })
-      .catch(e => setErr(e.message))
+    .then(([shape, metaJson]) => { setShapeData(shape); setMeta(metaJson) })
+    .catch(e => setErr(e.message))
   }, [])
 
-  // WebSocket
+  // WebSocket (중복 연결 방지)
   useEffect(() => {
+    if (wsRef.current) return
     const ws = new WebSocket(WS_URL)
+    wsRef.current = ws
     ws.onopen = () => console.log('[WS] open', WS_URL)
     ws.onmessage = ev => {
       try {
         const msg = JSON.parse(ev.data)
-        // 서버는 {x,y}만 보내므로 그대로 사용
-        if (typeof msg.x === 'number' && typeof msg.y === 'number') {
-          setPose({ x: msg.x, y: msg.y })
-        }
+        if (typeof msg.x === 'number' && typeof msg.y === 'number') setPose({ x: msg.x, y: msg.y })
       } catch {}
     }
     ws.onerror = e => console.warn('[WS] error', e)
     ws.onclose = e => console.log('[WS] close', e.code)
-    return () => ws.close()
+    return () => { try { wsRef.current?.close() } catch {} ; wsRef.current = null }
   }, [])
 
-  // 카메라 각도 로그(조정 참고)
+  // 컨트롤 각도 로그
   const handleControlsChange = (e) => {
     const c = e.target
     const az = THREE.MathUtils.radToDeg(c.getAzimuthalAngle()).toFixed(2)
@@ -66,21 +77,34 @@ export default function WallViewer() {
     console.log(`Azimuth: ${az}°, Polar: ${po}°`)
   }
 
-  // 포즈 → Three.js 좌표
+  // 포즈 → Three.js 좌표 (벽 메쉬와 동일 규칙: y는 -이미지Y)
   const redDotPos = useMemo(() => {
     if (!pose || !meta) return null
-    const { resolution, origin, width, height, rotateCCW90: rot } = meta
-    const { px, py_img } = metersToPixels({ x_m: pose.x, y_m: pose.y, origin, resolution })
+    const { width, resolution, origin, rotateCCW90: rot, affine } = meta
 
+    // ① affine 우선
+    if (Array.isArray(affine) && affine.length === 2 && affine[0].length === 3) {
+      const { xi, yi } = applyAffine(affine, pose.x, pose.y)
+      return [xi, -yi, 0.6]                  // ★ 메쉬와 동일하게 y 부호 반전
+    }
+
+    // ② 폴백: origin/resolution (+필요시 90도)
+    const { px, py_img } = metersToPixels({ x_m: pose.x, y_m: pose.y, origin, resolution })
     let xImg = px, yDown = py_img
     if (rot) {
       const r = rotateCCW90({ px, py_img }, width)
       xImg = r.xPrime
       yDown = r.yPrime_down
     }
-    // 이미지 y(아래+) → Three y(위+): height로 반전
-    const yUp = height - yDown
-    return [xImg, yUp, 0.6]
+    // 미세 조정: 방향 + 스케일링/오프셋 보정
+    const scaleX = 1.0  // X축 스케일링 원래대로 (이동 범위 복원)
+    const scaleY = 1.0  // Y축 스케일링 원래대로
+    const offsetX = meta.width * 0.05    // X축 오프셋 줄임 (30% 위치)
+    const offsetY = -meta.height * 0.7  // Y축 음수 오프셋으로 아래쪽 이동
+    
+    const correctedX = xImg * scaleX + offsetX
+    const correctedY = yDown * scaleY + offsetY
+    return [correctedX, correctedY, 0.6]
   }, [pose, meta])
 
   if (err) return <div style={{ padding: 16, color: 'crimson' }}>에러: {err}</div>
