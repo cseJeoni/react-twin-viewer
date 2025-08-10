@@ -25,11 +25,11 @@ OUT_META     = OUTPUT_DIR / "meta.json"
 # ======================================================================
 
 # ----- 외곽 추출 파라미터(필요시 조정) -----
-CLOSE_KERNEL_SIZE  = 5
-CLOSE_ITER         = 2
-AREA_MIN_RATIO     = 0.01
+CLOSE_KERNEL_SIZE  = 4      # 3 → 4: 벽 구멍을 메우면서도 디테일 보존
+CLOSE_ITER         = 2      # 1 → 2: 벽 내부 구멍을 확실히 메우기 위해 복원
+AREA_MIN_RATIO     = 0.008  # 0.005 → 0.008: 너무 작은 노이즈 제거
 BORDER_TOL         = 3
-APPROX_EPS_RATIO   = 0.012
+APPROX_EPS_RATIO   = 0.006  # 0.004 → 0.006: 디테일과 안정성의 균형
 # -------------------------------------------
 
 
