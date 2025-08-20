@@ -5,7 +5,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
-const WS_URL = `ws://192.168.75.186:8000/ws`
+const WS_URL = `ws://192.168.1.65:8000/ws`
 
 function parseMapYaml(text) {
   const res = parseFloat((text.match(/resolution:\s*([0-9.\-eE]+)/) || [])[1])
