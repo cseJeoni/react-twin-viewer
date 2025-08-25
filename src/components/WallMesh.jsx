@@ -1,4 +1,4 @@
-// src/components/WallMesh.jsx
+// src/components/WallMesh.jsx  (Reworked: uses outer/inner for uniform wall thickness)
 import React, { useMemo } from 'react'
 import * as THREE from 'three'
 
@@ -6,9 +6,10 @@ export default function WallMesh({ data, wallHeight = 20 }) {
   let outerSrc = Array.isArray(data?.outer) ? data.outer : null
   let innerSrc = Array.isArray(data?.inner) ? data.inner : null
 
-  // 폴백: 생성 스크립트가 폴리곤 리스트를 줄 때(구형 포맷)
+  // 폴백: 구형 포맷(폴리곤 리스트)일 때
   if (!outerSrc || !innerSrc) {
     if (Array.isArray(data) && data.length && Array.isArray(data[0])) {
+      // 가장 큰 폴리곤을 inner 로 사용
       const polys = data
       const area = (pts) => {
         if (!pts || pts.length < 3) return 0
@@ -20,30 +21,27 @@ export default function WallMesh({ data, wallHeight = 20 }) {
         }
         return Math.abs(s) * 0.5
       }
-      // 가장 큰 폴리곤을 inner로
-      let maxA = -1, maxIdx = -1
-      for (let i = 0; i < polys.length; i++) {
+      let maxIdx = 0, maxA = -1
+      for (let i=0;i<polys.length;i++){
         const a = area(polys[i])
         if (a > maxA) { maxA = a; maxIdx = i }
       }
-      if (maxIdx >= 0) {
-        innerSrc = polys[maxIdx]
-        // 바운딩 박스로 outer 생성(약간 margin)
-        let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity
-        for (const [x,y] of innerSrc) {
-          if (x < minX) minX = x
-          if (y < minY) minY = y
-          if (x > maxX) maxX = x
-          if (y > maxY) maxY = y
-        }
-        const m = 2 // margin px
-        outerSrc = [
-          [minX - m, minY - m],
-          [maxX + m, minY - m],
-          [maxX + m, maxY + m],
-          [minX - m, maxY + m],
-        ]
+      innerSrc = polys[maxIdx]
+      // 임시 outer: inner 의 bounding box + margin (구형 폴백 유지)
+      let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity
+      for (const [x,y] of innerSrc) {
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
       }
+      const m = 10
+      outerSrc = [
+        [minX - m, minY - m],
+        [maxX + m, minY - m],
+        [maxX + m, maxY + m],
+        [minX - m, maxY + m],
+      ]
     }
   }
 
@@ -71,15 +69,17 @@ export default function WallMesh({ data, wallHeight = 20 }) {
   return (
     <group>
       <mesh geometry={wallGeom} castShadow receiveShadow>
-        <meshStandardMaterial color="#ffffff" />
+        <meshStandardMaterial color="#e8e8e8" metalness={0} roughness={0.8} />
       </mesh>
-      <mesh geometry={floorGeom} position={[0, 0, 0.1]} renderOrder={1}>
+      <mesh geometry={floorGeom} position={[0, 0, 0.2]} renderOrder={1} receiveShadow>
         <meshStandardMaterial
-          color="#C5DCBF"
+          color="#CFE5D0"
           side={THREE.DoubleSide}
           polygonOffset
           polygonOffsetFactor={1}
           polygonOffsetUnits={1}
+          metalness={0}
+          roughness={1}
         />
       </mesh>
     </group>

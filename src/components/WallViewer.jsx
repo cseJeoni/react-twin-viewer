@@ -1,12 +1,13 @@
-// src/components/WallViewer.jsx
+// src/components/WallViewer.jsx  (Reworked: orthographic/isometric camera + cleaner materials/lighting)
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { OrbitControls, OrthographicCamera } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
-const WS_URL = `ws://192.168.1.65:8000/ws`
+const WS_URL = `ws://192.168.219.146:8000/ws`
 
+// --- Helpers (unchanged) ---
 function parseMapYaml(text) {
   const res = parseFloat((text.match(/resolution:\s*([0-9.\-eE]+)/) || [])[1])
   const originRaw = (text.match(/origin:\s*\[([^\]]+)\]/) || [])[1]
@@ -51,7 +52,6 @@ export default function WallViewer() {
   const [meta, setMeta] = useState(null)     // {width,height,resolution,origin,imageSrc}
   const [pose, setPose] = useState(null)
   const [err, setErr] = useState(null)
-  const controlsRef = useRef(null)
   const wsRef = useRef(null)
 
   const imgRef = useRef(null)
@@ -83,16 +83,15 @@ export default function WallViewer() {
         const cfg = await cfgR.json()
         const metaJson = await metaR.json()
         const wall = await wallR.json()
-        setShapeData(wall) // WallMesh가 포맷을 알아서 처리(구형/신형 둘 다)
+        setShapeData(wall)
 
-        // active 프로필 결정
         const qs = new URLSearchParams(window.location.search)
         const pick = qs.get('map') || cfg.active
         const profiles = cfg.profiles || cfg.maps || {}
         const prof = profiles[pick] || Object.values(profiles)[0]
         if (!prof) throw new Error('No profiles in map-config.json')
 
-        // 이미지 소스 찾기: (1) YAML → image 또는 (2) PGM/PNG 직접
+        // 이미지 소스 선택
         let imageSrc = null, w = metaJson.width || 0, h = metaJson.height || 0
         if (prof.yaml) {
           const yamlUrl = toRoot(prof.yaml)
@@ -105,7 +104,7 @@ export default function WallViewer() {
               const { dataURL, width: w0, height: h0 } = await pgmToDataURL(imgPath)
               imageSrc = dataURL; if (!w) w = w0; if (!h) h = h0
             } catch (e) {
-              imageSrc = imgPath.replace(/\.pgm$/i, '.png') // 폴백
+              imageSrc = imgPath.replace(/\.pgm$/i, '.png')
             }
           } else {
             imageSrc = imgPath
@@ -133,7 +132,7 @@ export default function WallViewer() {
     })()
   }, [])
 
-  // WebSocket
+  // WebSocket (pose 수신)
   useEffect(() => {
     if (wsRef.current) return
     const ws = new WebSocket(WS_URL)
@@ -148,13 +147,15 @@ export default function WallViewer() {
     return () => { try { wsRef.current?.close() } catch {} ; wsRef.current = null }
   }, [])
 
+  // 3D 빨간 점 위치
   const redDotPos = useMemo(() => {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     const H = meta.height || imgInfo.naturalH; if (!H) return null
     const { xImg, yImg } = mapToImagePixel(pose, { resolution: meta.resolution, origin: meta.origin, height: H })
-    return [xImg, -yImg, 0.6]
+    return [xImg, -yImg, 8] // 위로 살짝 띄움
   }, [pose, meta, imgInfo.naturalH])
 
+  // 2D 오버레이 좌표
   const robotPxOnImage = useMemo(() => {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     return mapToImagePixel(pose, { resolution: meta.resolution, origin: meta.origin, height: meta.height || imgInfo.naturalH })
@@ -187,6 +188,7 @@ export default function WallViewer() {
               updateImageMetrics()
               const img = e.target
               if (meta && (!meta.width || !meta.height)) {
+                // eslint-disable-next-line
                 setMeta(m => m ? { ...m, width: img.naturalWidth, height: img.naturalHeight } : m)
               }
             }}
@@ -217,21 +219,35 @@ export default function WallViewer() {
       <div style={{ width: '50%', height: '100%', margin: '10px' }}>
         <h3 style={{ color: 'white', textAlign: 'center', margin: '10px 0', fontSize: '16px' }}>3D 뷰어</h3>
         <div style={{ width: '100%', height: 'calc(100% - 50px)' }}>
-          <Canvas camera={{ position: [350, -350, 320], fov: 40 }}>
-            <ambientLight intensity={1.2} />
-            <directionalLight position={[300, 400, 800]} intensity={1.4} />
-            <directionalLight position={[-300, 200, 600]} intensity={1.0} />
-            <OrbitControls ref={controlsRef} enableRotate enableZoom enablePan onChange={e => {
-              const c = e.target
-              const az = THREE.MathUtils.radToDeg(c.getAzimuthalAngle()).toFixed(2)
-              const po = THREE.MathUtils.radToDeg(c.getPolarAngle()).toFixed(2)
-              console.log(`Azimuth: ${az}°, Polar: ${po}°`)
-            }}/>
-            <WallMesh data={shapeData} wallHeight={12} />
+          <Canvas shadows dpr={[1, 2]} gl={{ antialias: true }}>
+            {/* 정갈한 2.5D 느낌의 직교 카메라 */}
+            <OrthographicCamera
+              makeDefault
+              position={[600, -600, 500]}
+              zoom={2.0}
+              near={-10000}
+              far={10000}
+            />
+            <ambientLight intensity={0.9} />
+            <directionalLight
+              castShadow
+              position={[600, 800, 1200]}
+              intensity={1.1}
+              shadow-mapSize-width={2048}
+              shadow-mapSize-height={2048}
+            />
+            <OrbitControls
+              enablePan={false}
+              minPolarAngle={Math.PI/4}
+              maxPolarAngle={Math.PI/3}
+              minZoom={0.8}
+              maxZoom={6}
+            />
+            <WallMesh data={shapeData} wallHeight={24} />
             {redDotPos && (
-              <mesh position={redDotPos}>
-                <sphereGeometry args={[3, 16, 16]} />
-                <meshStandardMaterial color="red" emissive="red" emissiveIntensity={0.7} />
+              <mesh position={redDotPos} castShadow>
+                <sphereGeometry args={[6, 24, 24]} />
+                <meshStandardMaterial color="red" emissive="red" emissiveIntensity={0.6} />
               </mesh>
             )}
           </Canvas>
