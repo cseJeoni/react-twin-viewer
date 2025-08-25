@@ -1,7 +1,7 @@
 // src/components/WallViewer.jsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
@@ -47,7 +47,7 @@ const resolvePath = (baseUrl, rel) => {
   return baseDir + rel
 }
 
-// ===== 3D Pose Marker (inline) =====
+// ===== 3D Pose Marker (inline; always inside <Canvas/>) =====
 function useGlowTexture() {
   return React.useMemo(() => {
     const size = 256
@@ -84,8 +84,6 @@ function useRingTexture() {
     return tex
   }, [])
 }
-
-/** 반원 문제 없이 360°로 퍼지는 링 + 항상 보이는 글로우 */
 function PoseMarker3D({
   position = [0, 0, 0.6],
   coreRadius = 1.6,
@@ -98,17 +96,14 @@ function PoseMarker3D({
 }) {
   const glowTex = useGlowTexture()
   const ringTex = useRingTexture()
-
   const ringsRef = useRef([])
   const phasesRef = useRef([])
 
-  // 풀 생성(최초 1회)
   useEffect(() => {
     ringsRef.current = new Array(pulseCount)
     phasesRef.current = new Array(pulseCount).fill(0).map((_, i) => i / pulseCount)
   }, [pulseCount])
 
-  // 애니메이션
   useFrame((_, dt) => {
     const n = ringsRef.current.length
     for (let i = 0; i < n; i++) {
@@ -127,7 +122,6 @@ function PoseMarker3D({
 
   return (
     <group position={position}>
-      {/* Core */}
       <mesh renderOrder={30}>
         <sphereGeometry args={[coreRadius, 24, 24]} />
         <meshStandardMaterial
@@ -139,7 +133,6 @@ function PoseMarker3D({
         />
       </mesh>
 
-      {/* 항상 보이는 Glow */}
       {haloWorldSize > 0 && (
         <sprite scale={[haloWorldSize, haloWorldSize, 1]} renderOrder={31}>
           <spriteMaterial
@@ -153,7 +146,6 @@ function PoseMarker3D({
         </sprite>
       )}
 
-      {/* 360° Pulse Rings */}
       {new Array(pulseCount).fill(0).map((_, i) => (
         <sprite
           key={i}
@@ -162,7 +154,7 @@ function PoseMarker3D({
           renderOrder={32}
         >
           <spriteMaterial
-            map={useRingTexture()}
+            map={ringTex}
             color={pulseColor}
             transparent
             opacity={0.3}
@@ -176,15 +168,39 @@ function PoseMarker3D({
   )
 }
 
+// ===== helpers: center camera & controls target =====
+function SetControlsTarget({ controlsRef, target }) {
+  const t = Array.isArray(target) ? target : [0, 0, 0]
+  useEffect(() => {
+    if (!controlsRef.current) return
+    controlsRef.current.target.set(t[0], t[1], t[2] || 0)
+    controlsRef.current.update()
+  }, [controlsRef, t[0], t[1], t[2]])
+  return null
+}
+function SetCameraToCenter({ center }) {
+  const { camera } = useThree()
+  const c = Array.isArray(center) ? center : [0, 0, 0]
+  useEffect(() => {
+    // 대각선에서 내려다보는 위치(필요하면 수치 조절)
+    camera.position.set(c[0] + 350, c[1] - 350, 320)
+    camera.updateProjectionMatrix()
+  }, [camera, c[0], c[1], c[2]])
+  return null
+}
+
 // ===== main component =====
 export default function WallViewer() {
   const [shapeData, setShapeData] = useState(null)
-  const [meta, setMeta] = useState(null)     // {width,height,resolution,origin,imageSrc}
+  const [meta, setMeta] = useState(null)
   const [pose, setPose] = useState(null)
   const [err, setErr] = useState(null)
+  const [mode, setMode] = useState('3D') // '3D' or '2D'
+
   const controlsRef = useRef(null)
   const wsRef = useRef(null)
 
+  // 2D 이미지 표시 크기 기록
   const imgRef = useRef(null)
   const [imgInfo, setImgInfo] = useState({ naturalW: 0, naturalH: 0, dispW: 0, dispH: 0 })
   const updateImageMetrics = useCallback(() => {
@@ -198,7 +214,7 @@ export default function WallViewer() {
     return () => window.removeEventListener('resize', handler)
   }, [updateImageMetrics])
 
-  // map-config.json + meta.json + wall_shell.json
+  // meta/config/wall 로드
   useEffect(() => {
     (async () => {
       try {
@@ -273,7 +289,7 @@ export default function WallViewer() {
     return () => { try { wsRef.current?.close() } catch {} ; wsRef.current = null }
   }, [])
 
-  // 3D 좌표
+  // 3D 포즈 위치
   const redDotPos = useMemo(() => {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     const H = meta.height || imgInfo.naturalH; if (!H) return null
@@ -295,82 +311,122 @@ export default function WallViewer() {
     return { left: robotPxOnImage.xImg * scaleX, top: robotPxOnImage.yImg * scaleY }
   }, [robotPxOnImage, imgInfo, meta])
 
+  // === 맵 중심 (Canvas에서 이 좌표를 바라보도록 설정)
+  const mapCenter3D = useMemo(() => {
+    if (!meta?.width || !meta?.height) return [0, 0, 0]
+    return [meta.width / 2, -meta.height / 2, 0]
+  }, [meta])
+
   if (err) return <div style={{ padding: 16, color: 'crimson' }}>에러: {err}</div>
   if (!shapeData || !meta) return <div style={{ padding: 16 }}>Loading…</div>
 
+  // ===== responsive container =====
+  const rootStyle = {
+    width: '100vw',
+    height: '100vh',
+    background: '#1e1e1e',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  }
+  const panelStyle = {
+    position: 'relative',
+    width: 'min(100vw, 900px)',
+    height: 'min(100vh - 24px, 680px)',
+    maxWidth: '95vw',
+    maxHeight: '90vh',
+    borderRadius: 12,
+    border: '1px solid #444',
+    background: '#2a2a2a',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+    overflow: 'hidden',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  }
+  const topBarBtnStyle = {
+    position: 'absolute',
+    top: 10, right: 10,
+    zIndex: 20,
+    padding: '10px 16px',
+    background: '#ffffff',
+    color: '#111',
+    border: 'none',
+    borderRadius: 999,
+    fontWeight: 700,
+    letterSpacing: 0.3,
+    cursor: 'pointer',
+  }
+
   return (
-    <div style={{ display: 'flex', width: '100%', height: '100%' }}>
-      {/* 2D SLAM */}
-      <div style={{ width: '50%', height: '100%', position: 'relative', backgroundColor: '#2a2a2a', border: '2px solid #444', borderRadius: '8px', margin: '10px', overflow: 'hidden' }}>
-        <h3 style={{ color: 'white', textAlign: 'center', margin: '10px 0', fontSize: '16px' }}>2D SLAM 맵</h3>
-        <div style={{ position: 'relative', width: '100%', height: 'calc(100% - 50px)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <img
-            ref={imgRef}
-            src={meta.imageSrc}
-            alt="SLAM Map"
-            style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain', border: '1px solid #666' }}
-            onLoad={(e) => {
-              updateImageMetrics()
-              const img = e.target
-              if (meta && (!meta.width || !meta.height)) {
-                setMeta(m => m ? { ...m, width: img.naturalWidth, height: img.naturalHeight } : m)
-              }
-            }}
-          />
-          {dotDispPx && (
-            <div
-              style={{
-                position: 'absolute',
-                left: `calc(50% - ${imgInfo.dispW / 2}px + ${dotDispPx.left}px)`,
-                top:  `calc(50% - ${imgInfo.dispH / 2}px + ${dotDispPx.top}px)`,
-                width: 10, height: 10, backgroundColor: 'red',
-                borderRadius: '50%', border: '2px solid white',
-                boxShadow: '0 0 10px rgba(255, 0, 0, 0.8)',
-                transform: 'translate(-50%, -50%)', zIndex: 10
-              }}
-              title={pose ? `(${pose.x.toFixed(2)}, ${pose.y.toFixed(2)})` : ''}
-            />
-          )}
-        </div>
-        {pose && (
-          <div style={{ position: 'absolute', bottom: '10px', left: '10px', color: 'white', fontSize: '12px', backgroundColor: 'rgba(0,0,0,0.7)', padding: '5px 10px', borderRadius: '4px' }}>
-            위치: ({pose.x.toFixed(2)}, {pose.y.toFixed(2)})
+    <div style={rootStyle}>
+      <div style={panelStyle}>
+        {/* 모드 토글 버튼: 3D 모드일 때 '2D' 버튼, 2D 모드일 때 '3D' 버튼 */}
+        <button style={topBarBtnStyle} onClick={() => setMode(mode === '3D' ? '2D' : '3D')}>
+          {mode === '3D' ? '2D' : '3D'}
+        </button>
+
+        {/* 3D Viewer */}
+        {mode === '3D' && (
+          <div style={{ width: '100%', height: '100%' }}>
+            <Canvas camera={{ position: [0, 0, 320], fov: 40 }}>
+              {/* 맵 중앙으로 카메라/컨트롤 타깃 고정 */}
+              <SetCameraToCenter center={mapCenter3D} />
+              <ambientLight intensity={1.2} />
+              <directionalLight position={[300, 400, 800]} intensity={1.4} />
+              <directionalLight position={[-300, 200, 600]} intensity={1.0} />
+              <OrbitControls ref={controlsRef} enableRotate enableZoom enablePan />
+              <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
+
+              <WallMesh data={shapeData} wallHeight={12} />
+              {redDotPos && (
+                <PoseMarker3D
+                  position={redDotPos}
+                  coreRadius={1.6}
+                  haloWorldSize={28}
+                  pulseCount={3}
+                  pulseFrom={6}
+                  pulseTo={18}
+                  pulseSpeed={0.7}
+                />
+              )}
+            </Canvas>
           </div>
         )}
-      </div>
 
-      {/* 3D */}
-      <div style={{ width: '50%', height: '100%', margin: '10px' }}>
-        <h3 style={{ color: 'white', textAlign: 'center', margin: '10px 0', fontSize: '16px' }}>3D 뷰어</h3>
-        <div style={{ width: '100%', height: 'calc(100% - 50px)' }}>
-          <Canvas camera={{ position: [350, -350, 320], fov: 40 }}>
-            <ambientLight intensity={1.2} />
-            <directionalLight position={[300, 400, 800]} intensity={1.4} />
-            <directionalLight position={[-300, 200, 600]} intensity={1.0} />
-            <OrbitControls
-              ref={controlsRef}
-              enableRotate enableZoom enablePan
-              onChange={e => {
-                const c = e.target
-                const az = THREE.MathUtils.radToDeg(c.getAzimuthalAngle()).toFixed(2)
-                const po = THREE.MathUtils.radToDeg(c.getPolarAngle()).toFixed(2)
-                console.log(`Azimuth: ${az}°, Polar: ${po}°`)
+        {/* 2D Viewer */}
+        {mode === '2D' && (
+          <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <img
+              ref={imgRef}
+              src={meta.imageSrc}
+              alt="SLAM Map"
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              onLoad={(e) => {
+                updateImageMetrics()
+                const img = e.target
+                if (meta && (!meta.width || !meta.height)) {
+                  setMeta(m => m ? { ...m, width: img.naturalWidth, height: img.naturalHeight } : m)
+                }
               }}
             />
-            <WallMesh data={shapeData} wallHeight={12} />
-            {redDotPos && (
-              <PoseMarker3D
-                position={redDotPos}
-                coreRadius={1.6}
-                haloWorldSize={10}
-                pulseCount={3}
-                pulseFrom={1}
-                pulseTo={10}
-                pulseSpeed={0.5}
+            {dotDispPx && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `calc(50% - ${imgInfo.dispW / 2}px + ${dotDispPx.left}px)`,
+                  top:  `calc(50% - ${imgInfo.dispH / 2}px + ${dotDispPx.top}px)`,
+                  width: 10, height: 10, backgroundColor: 'red',
+                  borderRadius: '50%', border: '2px solid white',
+                  boxShadow: '0 0 10px rgba(255, 0, 0, 0.8)',
+                  transform: 'translate(-50%, -50%)', zIndex: 10
+                }}
+                title={pose ? `(${pose.x.toFixed(2)}, ${pose.y.toFixed(2)})` : ''}
               />
             )}
-          </Canvas>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )
