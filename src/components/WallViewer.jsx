@@ -1,13 +1,13 @@
-// src/components/WallViewer.jsx  (Reworked: orthographic/isometric camera + cleaner materials/lighting)
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+// src/components/WallViewer.jsx
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls, OrthographicCamera } from '@react-three/drei'
+import { Canvas, useFrame } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
 const WS_URL = `ws://192.168.219.146:8000/ws`
 
-// --- Helpers (unchanged) ---
+// ===== util =====
 function parseMapYaml(text) {
   const res = parseFloat((text.match(/resolution:\s*([0-9.\-eE]+)/) || [])[1])
   const originRaw = (text.match(/origin:\s*\[([^\]]+)\]/) || [])[1]
@@ -47,27 +47,158 @@ const resolvePath = (baseUrl, rel) => {
   return baseDir + rel
 }
 
+// ===== 3D Pose Marker (inline) =====
+function useGlowTexture() {
+  return React.useMemo(() => {
+    const size = 256
+    const c = document.createElement('canvas')
+    c.width = c.height = size
+    const ctx = c.getContext('2d')
+    const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2)
+    g.addColorStop(0.00, 'rgba(255,0,0,0.95)')
+    g.addColorStop(0.35, 'rgba(255,0,0,0.35)')
+    g.addColorStop(1.00, 'rgba(255,0,0,0.00)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, size, size)
+    const tex = new THREE.CanvasTexture(c)
+    tex.anisotropy = 4
+    tex.needsUpdate = true
+    return tex
+  }, [])
+}
+function useRingTexture() {
+  return React.useMemo(() => {
+    const size = 256
+    const c = document.createElement('canvas')
+    c.width = c.height = size
+    const ctx = c.getContext('2d')
+    ctx.clearRect(0, 0, size, size)
+    ctx.lineWidth = 16
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+    ctx.beginPath()
+    ctx.arc(size/2, size/2, size/2 - ctx.lineWidth, 0, Math.PI * 2)
+    ctx.stroke()
+    const tex = new THREE.CanvasTexture(c)
+    tex.anisotropy = 4
+    tex.needsUpdate = true
+    return tex
+  }, [])
+}
+
+/** 반원 문제 없이 360°로 퍼지는 링 + 항상 보이는 글로우 */
+function PoseMarker3D({
+  position = [0, 0, 0.6],
+  coreRadius = 1.6,
+  haloWorldSize = 28,
+  pulseCount = 3,
+  pulseFrom = 6,
+  pulseTo = 18,
+  pulseSpeed = 0.7,
+  pulseColor = '#ff6b6b',
+}) {
+  const glowTex = useGlowTexture()
+  const ringTex = useRingTexture()
+
+  const ringsRef = useRef([])
+  const phasesRef = useRef([])
+
+  // 풀 생성(최초 1회)
+  useEffect(() => {
+    ringsRef.current = new Array(pulseCount)
+    phasesRef.current = new Array(pulseCount).fill(0).map((_, i) => i / pulseCount)
+  }, [pulseCount])
+
+  // 애니메이션
+  useFrame((_, dt) => {
+    const n = ringsRef.current.length
+    for (let i = 0; i < n; i++) {
+      const spr = ringsRef.current[i]
+      if (!spr) continue
+      phasesRef.current[i] += dt * pulseSpeed
+      if (phasesRef.current[i] > 1) phasesRef.current[i] -= 1
+      const t = phasesRef.current[i]
+      const r = pulseFrom + (pulseTo - pulseFrom) * t
+      const fade = 1 - t
+      spr.material.opacity = 0.35 * fade
+      const d = r * 2
+      spr.scale.set(d, d, 1)
+    }
+  })
+
+  return (
+    <group position={position}>
+      {/* Core */}
+      <mesh renderOrder={30}>
+        <sphereGeometry args={[coreRadius, 24, 24]} />
+        <meshStandardMaterial
+          color="#ff4444"
+          emissive="#ff2222"
+          emissiveIntensity={0.6}
+          metalness={0}
+          roughness={0.3}
+        />
+      </mesh>
+
+      {/* 항상 보이는 Glow */}
+      {haloWorldSize > 0 && (
+        <sprite scale={[haloWorldSize, haloWorldSize, 1]} renderOrder={31}>
+          <spriteMaterial
+            map={glowTex}
+            transparent
+            depthTest={false}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            color="white"
+          />
+        </sprite>
+      )}
+
+      {/* 360° Pulse Rings */}
+      {new Array(pulseCount).fill(0).map((_, i) => (
+        <sprite
+          key={i}
+          ref={el => (ringsRef.current[i] = el)}
+          position={[0, 0, 0.21]}
+          renderOrder={32}
+        >
+          <spriteMaterial
+            map={useRingTexture()}
+            color={pulseColor}
+            transparent
+            opacity={0.3}
+            depthTest={false}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </sprite>
+      ))}
+    </group>
+  )
+}
+
+// ===== main component =====
 export default function WallViewer() {
   const [shapeData, setShapeData] = useState(null)
   const [meta, setMeta] = useState(null)     // {width,height,resolution,origin,imageSrc}
   const [pose, setPose] = useState(null)
   const [err, setErr] = useState(null)
+  const controlsRef = useRef(null)
   const wsRef = useRef(null)
 
   const imgRef = useRef(null)
   const [imgInfo, setImgInfo] = useState({ naturalW: 0, naturalH: 0, dispW: 0, dispH: 0 })
-  const updateImageMetrics = () => {
+  const updateImageMetrics = useCallback(() => {
     const img = imgRef.current; if (!img) return
     const rect = img.getBoundingClientRect()
     setImgInfo({ naturalW: img.naturalWidth, naturalH: img.naturalHeight, dispW: rect.width, dispH: rect.height })
-  }
+  }, [])
   useEffect(() => {
     const handler = () => updateImageMetrics()
     window.addEventListener('resize', handler)
     return () => window.removeEventListener('resize', handler)
-  }, [])
+  }, [updateImageMetrics])
 
-  // ✅ map-config.json + meta.json + wall_shell.json 로드
+  // map-config.json + meta.json + wall_shell.json
   useEffect(() => {
     (async () => {
       try {
@@ -91,7 +222,6 @@ export default function WallViewer() {
         const prof = profiles[pick] || Object.values(profiles)[0]
         if (!prof) throw new Error('No profiles in map-config.json')
 
-        // 이미지 소스 선택
         let imageSrc = null, w = metaJson.width || 0, h = metaJson.height || 0
         if (prof.yaml) {
           const yamlUrl = toRoot(prof.yaml)
@@ -103,21 +233,17 @@ export default function WallViewer() {
             try {
               const { dataURL, width: w0, height: h0 } = await pgmToDataURL(imgPath)
               imageSrc = dataURL; if (!w) w = w0; if (!h) h = h0
-            } catch (e) {
+            } catch {
               imageSrc = imgPath.replace(/\.pgm$/i, '.png')
             }
-          } else {
-            imageSrc = imgPath
-          }
+          } else imageSrc = imgPath
         } else {
           const imgPath = toRoot(prof.pgm || prof.image || prof.png)
           if (!imgPath) throw new Error('No yaml/pgm/image in profile')
           if (imgPath.toLowerCase().endsWith('.pgm')) {
             const { dataURL, width: w0, height: h0 } = await pgmToDataURL(imgPath)
             imageSrc = dataURL; if (!w) w = w0; if (!h) h = h0
-          } else {
-            imageSrc = imgPath
-          }
+          } else imageSrc = imgPath
         }
 
         setMeta({
@@ -132,7 +258,7 @@ export default function WallViewer() {
     })()
   }, [])
 
-  // WebSocket (pose 수신)
+  // WebSocket
   useEffect(() => {
     if (wsRef.current) return
     const ws = new WebSocket(WS_URL)
@@ -147,12 +273,12 @@ export default function WallViewer() {
     return () => { try { wsRef.current?.close() } catch {} ; wsRef.current = null }
   }, [])
 
-  // 3D 빨간 점 위치
+  // 3D 좌표
   const redDotPos = useMemo(() => {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     const H = meta.height || imgInfo.naturalH; if (!H) return null
     const { xImg, yImg } = mapToImagePixel(pose, { resolution: meta.resolution, origin: meta.origin, height: H })
-    return [xImg, -yImg, 8] // 위로 살짝 띄움
+    return [xImg, -yImg, 0.6]
   }, [pose, meta, imgInfo.naturalH])
 
   // 2D 오버레이 좌표
@@ -160,7 +286,6 @@ export default function WallViewer() {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     return mapToImagePixel(pose, { resolution: meta.resolution, origin: meta.origin, height: meta.height || imgInfo.naturalH })
   }, [pose, meta, imgInfo.naturalH])
-
   const dotDispPx = useMemo(() => {
     if (!robotPxOnImage || !imgInfo.dispW || !imgInfo.dispH || !(imgInfo.naturalW || meta?.width) || !(imgInfo.naturalH || meta?.height)) return null
     const naturalW = imgInfo.naturalW || meta.width
@@ -188,7 +313,6 @@ export default function WallViewer() {
               updateImageMetrics()
               const img = e.target
               if (meta && (!meta.width || !meta.height)) {
-                // eslint-disable-next-line
                 setMeta(m => m ? { ...m, width: img.naturalWidth, height: img.naturalHeight } : m)
               }
             }}
@@ -219,36 +343,31 @@ export default function WallViewer() {
       <div style={{ width: '50%', height: '100%', margin: '10px' }}>
         <h3 style={{ color: 'white', textAlign: 'center', margin: '10px 0', fontSize: '16px' }}>3D 뷰어</h3>
         <div style={{ width: '100%', height: 'calc(100% - 50px)' }}>
-          <Canvas shadows dpr={[1, 2]} gl={{ antialias: true }}>
-            {/* 정갈한 2.5D 느낌의 직교 카메라 */}
-            <OrthographicCamera
-              makeDefault
-              position={[600, -600, 500]}
-              zoom={2.0}
-              near={-10000}
-              far={10000}
-            />
-            <ambientLight intensity={0.9} />
-            <directionalLight
-              castShadow
-              position={[600, 800, 1200]}
-              intensity={1.1}
-              shadow-mapSize-width={2048}
-              shadow-mapSize-height={2048}
-            />
+          <Canvas camera={{ position: [350, -350, 320], fov: 40 }}>
+            <ambientLight intensity={1.2} />
+            <directionalLight position={[300, 400, 800]} intensity={1.4} />
+            <directionalLight position={[-300, 200, 600]} intensity={1.0} />
             <OrbitControls
-              enablePan={false}
-              minPolarAngle={Math.PI/4}
-              maxPolarAngle={Math.PI/3}
-              minZoom={0.8}
-              maxZoom={6}
+              ref={controlsRef}
+              enableRotate enableZoom enablePan
+              onChange={e => {
+                const c = e.target
+                const az = THREE.MathUtils.radToDeg(c.getAzimuthalAngle()).toFixed(2)
+                const po = THREE.MathUtils.radToDeg(c.getPolarAngle()).toFixed(2)
+                console.log(`Azimuth: ${az}°, Polar: ${po}°`)
+              }}
             />
-            <WallMesh data={shapeData} wallHeight={24} />
+            <WallMesh data={shapeData} wallHeight={12} />
             {redDotPos && (
-              <mesh position={redDotPos} castShadow>
-                <sphereGeometry args={[6, 24, 24]} />
-                <meshStandardMaterial color="red" emissive="red" emissiveIntensity={0.6} />
-              </mesh>
+              <PoseMarker3D
+                position={redDotPos}
+                coreRadius={1.6}
+                haloWorldSize={10}
+                pulseCount={3}
+                pulseFrom={1}
+                pulseTo={10}
+                pulseSpeed={0.5}
+              />
             )}
           </Canvas>
         </div>
