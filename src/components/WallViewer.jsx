@@ -384,11 +384,11 @@ export default function WallViewer() {
                 <PoseMarker3D
                   position={redDotPos}
                   coreRadius={1.6}
-                  haloWorldSize={28}
+                  haloWorldSize={12}
                   pulseCount={3}
-                  pulseFrom={6}
-                  pulseTo={18}
-                  pulseSpeed={0.7}
+                  pulseFrom={2}
+                  pulseTo={13}
+                  pulseSpeed={0.4}
                 />
               )}
             </Canvas>
