@@ -374,92 +374,62 @@ export default function WallViewer() {
   }
 
   return (
-    <div style={rootStyle}>
-      <div style={panelStyle}>
-        {/* 모드 토글 버튼: 3D 모드일 때 '2D' 버튼, 2D 모드일 때 '3D' 버튼 */}
-        <button style={topBarBtnStyle} onClick={() => setMode(mode === '3D' ? '2D' : '3D')}>
-          {mode === '3D' ? '2D' : '3D'}
-        </button>
+    <div
+    style={{
+      position: 'fixed',
+      inset: 0,
+      background: '#ffffff',   // 페이지 배경 흰색
+      overflow: 'hidden',
+    }}
+  >
+    <Canvas
+      camera={{ position: [0, 0, 320], fov: 40 }}
+      gl={{ antialias: true, alpha: true }}
+      onCreated={({ gl }) => {
+        gl.setClearColor('#ffffff', 1);  // 캔버스 클리어 컬러도 흰색
+      }}
+      style={{ width: '100%', height: '100%' }} // 뷰포트 꽉 채우기
+    >
+      {/* 초기 각도: 사선, 뒷면 제한은 기존 OrbitControls 설정 그대로 */}
+      <SetCameraToCenter
+        center={mapCenter3D}
+        yawDeg={-35}
+        pitchDeg={62}
+        distance={Math.max(meta.width, meta.height) * 0.9 + 250}
+      />
 
-        {/* 3D Viewer */}
-        {mode === '3D' && (
-          <div style={{ width: '100%', height: '100%' }}>
-            <Canvas camera={{ position: [0, 0, 320], fov: 40 }}>
-              {/* 초기 뷰: 레퍼런스처럼 살짝 눕힌 사선, Z-up */}
-              <SetCameraToCenter
-                center={mapCenter3D}
-                yawDeg={-35}     // 좌/우 방향
-                pitchDeg={62}    // 바닥에서 들림 각도(작게=수평, 크게=정면에 가까움)
-                distance={Math.max(meta.width, meta.height) * 0.9 + 250}
-              />
-              <ambientLight intensity={1.2} />
-              <directionalLight position={[300, 400, 800]} intensity={1.4} />
-              <directionalLight position={[-300, 200, 600]} intensity={1.0} />
+      <ambientLight intensity={1.2} />
+      <directionalLight position={[300, 400, 800]} intensity={1.4} />
+      <directionalLight position={[-300, 200, 600]} intensity={1.0} />
 
-              <OrbitControls
-                ref={controlsRef}
-                enableRotate
-                enableZoom
-                enablePan
-                enableDamping
-                dampingFactor={0.08}
-                // 뒷면이 보이지 않도록 Z-up 기준 각도 제한
-                minPolarAngle={THREE.MathUtils.degToRad(25)}  // 너무 위에서 수직으로 보지 않게
-                maxPolarAngle={THREE.MathUtils.degToRad(80)}  // 바닥 아래로 넘어가지 않게
-                minDistance={Math.max(meta.width, meta.height) * 0.3}
-                maxDistance={Math.max(meta.width, meta.height) * 2.0}
-              />
-              <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
+      <OrbitControls
+        ref={controlsRef}
+        enableRotate
+        enableZoom
+        enablePan
+        enableDamping
+        dampingFactor={0.08}
+        minPolarAngle={THREE.MathUtils.degToRad(25)}
+        maxPolarAngle={THREE.MathUtils.degToRad(80)}
+        minDistance={Math.max(meta.width, meta.height) * 0.3}
+        maxDistance={Math.max(meta.width, meta.height) * 2.0}
+      />
+      <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
 
-              <WallMesh data={shapeData} wallHeight={12} />
-              {redDotPos && (
-                <PoseMarker3D
-                  position={redDotPos}
-                  coreRadius={1.6}
-                  haloWorldSize={10}
-                  pulseCount={3}
-                  pulseFrom={2}
-                  pulseTo={13}
-                  pulseSpeed={0.4}
-                />
-              )}
-            </Canvas>
-          </div>
-        )}
+      <WallMesh data={shapeData} wallHeight={12} />
 
-        {/* 2D Viewer */}
-        {mode === '2D' && (
-          <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <img
-              ref={imgRef}
-              src={meta.imageSrc}
-              alt="SLAM Map"
-              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-              onLoad={(e) => {
-                updateImageMetrics()
-                const img = e.target
-                if (meta && (!meta.width || !meta.height)) {
-                  setMeta(m => m ? { ...m, width: img.naturalWidth, height: img.naturalHeight } : m)
-                }
-              }}
-            />
-            {dotDispPx && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: `calc(50% - ${imgInfo.dispW / 2}px + ${dotDispPx.left}px)`,
-                  top:  `calc(50% - ${imgInfo.dispH / 2}px + ${dotDispPx.top}px)`,
-                  width: 10, height: 10, backgroundColor: 'red',
-                  borderRadius: '50%', border: '2px solid white',
-                  boxShadow: '0 0 10px rgba(255, 0, 0, 0.8)',
-                  transform: 'translate(-50%, -50%)', zIndex: 10
-                }}
-                title={pose ? `(${pose.x.toFixed(2)}, ${pose.y.toFixed(2)})` : ''}
-              />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+      {redDotPos && (
+        <PoseMarker3D
+          position={redDotPos}
+          coreRadius={1.6}
+          haloWorldSize={10}
+          pulseCount={3}
+          pulseFrom={2}
+          pulseTo={13}
+          pulseSpeed={0.4}
+        />
+      )}
+    </Canvas>
+  </div>
   )
 }
