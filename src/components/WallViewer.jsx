@@ -5,7 +5,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
 
-const WS_URL = `ws://192.168.219.146:8000/ws`
+const WS_URL = `ws://192.168.219.196:8000/ws`
 
 // ===== util =====
 function parseMapYaml(text) {
@@ -178,14 +178,28 @@ function SetControlsTarget({ controlsRef, target }) {
   }, [controlsRef, t[0], t[1], t[2]])
   return null
 }
-function SetCameraToCenter({ center }) {
+
+/** 초기 각도를 yaw/pitch/distance로 지정(Z-up), 이후 카메라 유지 */
+function SetCameraToCenter({ center, yawDeg = -35, pitchDeg = 62, distance = 520 }) {
   const { camera } = useThree()
   const c = Array.isArray(center) ? center : [0, 0, 0]
   useEffect(() => {
-    // 대각선에서 내려다보는 위치(필요하면 수치 조절)
-    camera.position.set(c[0] + 350, c[1] - 350, 320)
+    // Z-up으로 명시(OrbitControls 각도 제한을 Z축 기준으로 쓰기 위함)
+    camera.up.set(0, 0, 1)
+
+    // pitch: 바닥(평면)에서의 들림 각도, yaw: 위에서 봤을 때 시계/반시계
+    const yaw = THREE.MathUtils.degToRad(yawDeg)
+    const pitch = THREE.MathUtils.degToRad(pitchDeg)
+
+    const rXY = distance * Math.cos(pitch) // 바닥 평면상의 반경
+    const z   = distance * Math.sin(pitch) // 높이
+
+    const x = c[0] + rXY * Math.cos(yaw)
+    const y = c[1] + rXY * Math.sin(yaw)
+    camera.position.set(x, y, z)
+    camera.lookAt(c[0], c[1], c[2] || 0)
     camera.updateProjectionMatrix()
-  }, [camera, c[0], c[1], c[2]])
+  }, [camera, c[0], c[1], c[2], yawDeg, pitchDeg, distance])
   return null
 }
 
@@ -371,12 +385,30 @@ export default function WallViewer() {
         {mode === '3D' && (
           <div style={{ width: '100%', height: '100%' }}>
             <Canvas camera={{ position: [0, 0, 320], fov: 40 }}>
-              {/* 맵 중앙으로 카메라/컨트롤 타깃 고정 */}
-              <SetCameraToCenter center={mapCenter3D} />
+              {/* 초기 뷰: 레퍼런스처럼 살짝 눕힌 사선, Z-up */}
+              <SetCameraToCenter
+                center={mapCenter3D}
+                yawDeg={-35}     // 좌/우 방향
+                pitchDeg={62}    // 바닥에서 들림 각도(작게=수평, 크게=정면에 가까움)
+                distance={Math.max(meta.width, meta.height) * 0.9 + 250}
+              />
               <ambientLight intensity={1.2} />
               <directionalLight position={[300, 400, 800]} intensity={1.4} />
               <directionalLight position={[-300, 200, 600]} intensity={1.0} />
-              <OrbitControls ref={controlsRef} enableRotate enableZoom enablePan />
+
+              <OrbitControls
+                ref={controlsRef}
+                enableRotate
+                enableZoom
+                enablePan
+                enableDamping
+                dampingFactor={0.08}
+                // 뒷면이 보이지 않도록 Z-up 기준 각도 제한
+                minPolarAngle={THREE.MathUtils.degToRad(25)}  // 너무 위에서 수직으로 보지 않게
+                maxPolarAngle={THREE.MathUtils.degToRad(80)}  // 바닥 아래로 넘어가지 않게
+                minDistance={Math.max(meta.width, meta.height) * 0.3}
+                maxDistance={Math.max(meta.width, meta.height) * 2.0}
+              />
               <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
 
               <WallMesh data={shapeData} wallHeight={12} />
@@ -384,7 +416,7 @@ export default function WallViewer() {
                 <PoseMarker3D
                   position={redDotPos}
                   coreRadius={1.6}
-                  haloWorldSize={12}
+                  haloWorldSize={10}
                   pulseCount={3}
                   pulseFrom={2}
                   pulseTo={13}
