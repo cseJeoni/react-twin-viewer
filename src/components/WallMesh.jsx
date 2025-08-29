@@ -69,17 +69,24 @@ export default function WallMesh({ data, wallHeight = 20 }) {
   return (
     <group>
       <mesh geometry={wallGeom} castShadow receiveShadow>
-        <meshStandardMaterial color="#e8e8e8" metalness={0} roughness={0.8} />
+        <meshStandardMaterial 
+           color="#FFFFFF"
+           emissive="#FFFFFF"
+           emissiveIntensity={0.55}   // ← 0.2 → 0.55 (필요하면 0.45~0.65 사이로 미세조정)
+           metalness={0}
+           roughness={0.65}           // ← 살짝 낮춰서 탁한 음영 줄임(선택)
+        />
       </mesh>
       <mesh geometry={floorGeom} position={[0, 0, 0.2]} renderOrder={1} receiveShadow>
         <meshStandardMaterial
-          color="#CFE5D0"
+          color="#B3D5A8"
           side={THREE.DoubleSide}
           polygonOffset
           polygonOffsetFactor={1}
           polygonOffsetUnits={1}
           metalness={0}
           roughness={1}
+
         />
       </mesh>
     </group>

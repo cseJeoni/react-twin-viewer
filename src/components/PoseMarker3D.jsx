@@ -73,7 +73,7 @@ export default function PoseMarker3D({
       for (let i = 0; i < afterimageCount; i++) {
         const spr = new THREE.Sprite(new THREE.SpriteMaterial({
           map: haloTex,
-          color: new THREE.Color(1, 1, 1),
+          color: new THREE.Color(1, 1, 1), // 흰색(= 텍스처의 빨강 그대로 표시)
           transparent: true,
           opacity: 0.0,
           depthWrite: false,
@@ -122,8 +122,8 @@ export default function PoseMarker3D({
         <mesh>
           <sphereGeometry args={[coreRadius, 24, 24]} />
           <meshStandardMaterial
-            color="#ff4444"
-            emissive="#ff2222"
+            color="red"
+            emissive="red"
             emissiveIntensity={0.5}
             metalness={0}
             roughness={0.3}
@@ -137,7 +137,7 @@ export default function PoseMarker3D({
             transparent
             depthWrite={false}
             blending={THREE.AdditiveBlending}
-            color="white"
+            color="white"  // 텍스처의 빨강 유지
           />
         </sprite>
 
@@ -146,7 +146,7 @@ export default function PoseMarker3D({
           <ringGeometry args={[ringRadius, ringRadius + ringThickness, 64]} />
           <meshBasicMaterial
             ref={ringMatRef}
-            color="#ff4d4d"
+            color="#ff4d4d"  // 붉은 링
             transparent
             opacity={0.8}
             blending={THREE.AdditiveBlending}

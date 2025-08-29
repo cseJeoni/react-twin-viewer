@@ -55,9 +55,9 @@ function useGlowTexture() {
     c.width = c.height = size
     const ctx = c.getContext('2d')
     const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2)
-    g.addColorStop(0.00, 'rgba(255,0,0,0.95)')
-    g.addColorStop(0.35, 'rgba(255,0,0,0.35)')
-    g.addColorStop(1.00, 'rgba(255,0,0,0.00)')
+    g.addColorStop(0.00, 'rgba(255,  0,  0, 0.95)') // 빨강 중심
+    g.addColorStop(0.35, 'rgba(255,  0,  0, 0.35)')
+    g.addColorStop(1.00, 'rgba(255,  0,  0, 0.00)')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, size, size)
     const tex = new THREE.CanvasTexture(c)
@@ -92,7 +92,7 @@ function PoseMarker3D({
   pulseFrom = 6,
   pulseTo = 18,
   pulseSpeed = 0.7,
-  pulseColor = '#ff6b6b',
+  pulseColor = '#FF4D4D',
 }) {
   const glowTex = useGlowTexture()
   const ringTex = useRingTexture()
@@ -125,9 +125,9 @@ function PoseMarker3D({
       <mesh renderOrder={30}>
         <sphereGeometry args={[coreRadius, 24, 24]} />
         <meshStandardMaterial
-          color="#ff4444"
-          emissive="#ff2222"
-          emissiveIntensity={0.6}
+color="#FF3B30"
+emissive="#B00000"
+emissiveIntensity={0.55}
           metalness={0}
           roughness={0.3}
         />
@@ -398,7 +398,8 @@ export default function WallViewer() {
         distance={Math.max(meta.width, meta.height) * 0.9 + 250}
       />
 
-      <ambientLight intensity={1.2} />
+      <ambientLight intensity={1.5} />
+     <hemisphereLight  color="#ffffff" groundColor="#f4f4f4" intensity={0.9} />
       <directionalLight position={[300, 400, 800]} intensity={1.4} />
       <directionalLight position={[-300, 200, 600]} intensity={1.0} />
 
@@ -420,13 +421,13 @@ export default function WallViewer() {
 
       {redDotPos && (
         <PoseMarker3D
-          position={redDotPos}
-          coreRadius={1.6}
-          haloWorldSize={10}
-          pulseCount={3}
-          pulseFrom={2}
-          pulseTo={13}
-          pulseSpeed={0.4}
+        position={redDotPos}
+        coreRadius={1.6}
+        haloWorldSize={10}
+        pulseCount={3}
+        pulseFrom={2}
+        pulseTo={13}
+        pulseSpeed={0.4}
         />
       )}
     </Canvas>
