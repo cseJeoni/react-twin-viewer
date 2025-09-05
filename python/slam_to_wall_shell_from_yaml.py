@@ -35,7 +35,7 @@ APPROX_EPS_RATIO   = 0.004   # 도형 근사 (작을수록 디테일 up)
 # ----- 벽 두께(픽셀 단위) ------------------------------------------
 #  - 이미지 좌표계에서의 벽 두께(px). 실제 미터 두께는 thickness_m = thickness_px * resolution
 #  - 필요 시 public/map-config.json 에 "wall_px": 8 처럼 넣어 덮어쓸 수 있음.
-DEFAULT_WALL_THICK_PX = 5
+DEFAULT_WALL_THICK_PX = 6.5
 # --------------------------------------------------------------------
 
 

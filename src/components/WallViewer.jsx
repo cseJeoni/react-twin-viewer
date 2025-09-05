@@ -417,7 +417,7 @@ export default function WallViewer() {
       />
       <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
 
-      <WallMesh data={shapeData} wallHeight={12} />
+      <WallMesh data={shapeData} wallHeight={35} />
 
       {redDotPos && (
         <PoseMarker3D
