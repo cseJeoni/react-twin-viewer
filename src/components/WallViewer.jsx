@@ -4,8 +4,9 @@ import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import WallMesh from './WallMesh'
+import ObstacleMesh from './ObstacleMesh' // <--- [추가] ObstacleMesh 컴포넌트 임포트
 
-const WS_URL = `ws://192.168.219.196:8000/ws`
+const WS_URL = `ws://192.168.10.64:8000/ws`
 
 // ===== util =====
 function parseMapYaml(text) {
@@ -184,16 +185,11 @@ function SetCameraToCenter({ center, yawDeg = -35, pitchDeg = 62, distance = 520
   const { camera } = useThree()
   const c = Array.isArray(center) ? center : [0, 0, 0]
   useEffect(() => {
-    // Z-up으로 명시(OrbitControls 각도 제한을 Z축 기준으로 쓰기 위함)
     camera.up.set(0, 0, 1)
-
-    // pitch: 바닥(평면)에서의 들림 각도, yaw: 위에서 봤을 때 시계/반시계
     const yaw = THREE.MathUtils.degToRad(yawDeg)
     const pitch = THREE.MathUtils.degToRad(pitchDeg)
-
-    const rXY = distance * Math.cos(pitch) // 바닥 평면상의 반경
-    const z   = distance * Math.sin(pitch) // 높이
-
+    const rXY = distance * Math.cos(pitch)
+    const z   = distance * Math.sin(pitch)
     const x = c[0] + rXY * Math.cos(yaw)
     const y = c[1] + rXY * Math.sin(yaw)
     camera.position.set(x, y, z)
@@ -206,15 +202,14 @@ function SetCameraToCenter({ center, yawDeg = -35, pitchDeg = 62, distance = 520
 // ===== main component =====
 export default function WallViewer() {
   const [shapeData, setShapeData] = useState(null)
+  const [obstacleData, setObstacleData] = useState(null); // <--- [NEW] State for obstacle data
   const [meta, setMeta] = useState(null)
   const [pose, setPose] = useState(null)
   const [err, setErr] = useState(null)
-  const [mode, setMode] = useState('3D') // '3D' or '2D'
+  const [mode, setMode] = useState('3D')
 
   const controlsRef = useRef(null)
   const wsRef = useRef(null)
-
-  // 2D 이미지 표시 크기 기록
   const imgRef = useRef(null)
   const [imgInfo, setImgInfo] = useState({ naturalW: 0, naturalH: 0, dispW: 0, dispH: 0 })
   const updateImageMetrics = useCallback(() => {
@@ -222,29 +217,35 @@ export default function WallViewer() {
     const rect = img.getBoundingClientRect()
     setImgInfo({ naturalW: img.naturalWidth, naturalH: img.naturalHeight, dispW: rect.width, dispH: rect.height })
   }, [])
+
   useEffect(() => {
     const handler = () => updateImageMetrics()
     window.addEventListener('resize', handler)
     return () => window.removeEventListener('resize', handler)
   }, [updateImageMetrics])
 
-  // meta/config/wall 로드
+  // meta/config/wall/obstacles load
   useEffect(() => {
     (async () => {
       try {
-        const [cfgR, metaR, wallR] = await Promise.all([
+        // <--- [CHANGED] Fetch obstacles.json as well
+        const [cfgR, metaR, wallR, obstacleR] = await Promise.all([
           fetch('/map-config.json'),
           fetch('/meta.json'),
           fetch('/wall_shell.json'),
+          fetch('/obstacles.json'),
         ])
         if (!cfgR.ok) throw new Error('map-config.json not found')
         if (!metaR.ok) throw new Error('meta.json not found')
         if (!wallR.ok) throw new Error('wall_shell.json not found')
+        if (!obstacleR.ok) throw new Error('obstacles.json not found') // <--- [NEW] Check for obstacles file
 
         const cfg = await cfgR.json()
         const metaJson = await metaR.json()
         const wall = await wallR.json()
+        const obstacles = await obstacleR.json() // <--- [NEW] Parse obstacles
         setShapeData(wall)
+        setObstacleData(obstacles) // <--- [NEW] Set obstacle data to state
 
         const qs = new URLSearchParams(window.location.search)
         const pick = qs.get('map') || cfg.active
@@ -303,7 +304,7 @@ export default function WallViewer() {
     return () => { try { wsRef.current?.close() } catch {} ; wsRef.current = null }
   }, [])
 
-  // 3D 포즈 위치
+  // 3D pose position
   const redDotPos = useMemo(() => {
     if (!pose || !meta || !meta.resolution || !meta.origin) return null
     const H = meta.height || imgInfo.naturalH; if (!H) return null
@@ -311,126 +312,76 @@ export default function WallViewer() {
     return [xImg, -yImg, 0.6]
   }, [pose, meta, imgInfo.naturalH])
 
-  // 2D 오버레이 좌표
-  const robotPxOnImage = useMemo(() => {
-    if (!pose || !meta || !meta.resolution || !meta.origin) return null
-    return mapToImagePixel(pose, { resolution: meta.resolution, origin: meta.origin, height: meta.height || imgInfo.naturalH })
-  }, [pose, meta, imgInfo.naturalH])
-  const dotDispPx = useMemo(() => {
-    if (!robotPxOnImage || !imgInfo.dispW || !imgInfo.dispH || !(imgInfo.naturalW || meta?.width) || !(imgInfo.naturalH || meta?.height)) return null
-    const naturalW = imgInfo.naturalW || meta.width
-    const naturalH = imgInfo.naturalH || meta.height
-    const scaleX = imgInfo.dispW / naturalW
-    const scaleY = imgInfo.dispH / naturalH
-    return { left: robotPxOnImage.xImg * scaleX, top: robotPxOnImage.yImg * scaleY }
-  }, [robotPxOnImage, imgInfo, meta])
-
-  // === 맵 중심 (Canvas에서 이 좌표를 바라보도록 설정)
+  // Map center for camera targeting
   const mapCenter3D = useMemo(() => {
     if (!meta?.width || !meta?.height) return [0, 0, 0]
     return [meta.width / 2, -meta.height / 2, 0]
   }, [meta])
 
+  // <--- [CHANGED] Loading condition now includes obstacleData
   if (err) return <div style={{ padding: 16, color: 'crimson' }}>에러: {err}</div>
-  if (!shapeData || !meta) return <div style={{ padding: 16 }}>Loading…</div>
+  if (!shapeData || !meta || !obstacleData) return <div style={{ padding: 16 }}>Loading…</div>
 
-  // ===== responsive container =====
-  const rootStyle = {
-    width: '100vw',
-    height: '100vh',
-    background: '#1e1e1e',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  }
-  const panelStyle = {
-    position: 'relative',
-    width: 'min(100vw, 900px)',
-    height: 'min(100vh - 24px, 680px)',
-    maxWidth: '95vw',
-    maxHeight: '90vh',
-    borderRadius: 12,
-    border: '1px solid #444',
-    background: '#2a2a2a',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-    overflow: 'hidden',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  }
-  const topBarBtnStyle = {
-    position: 'absolute',
-    top: 10, right: 10,
-    zIndex: 20,
-    padding: '10px 16px',
-    background: '#ffffff',
-    color: '#111',
-    border: 'none',
-    borderRadius: 999,
-    fontWeight: 700,
-    letterSpacing: 0.3,
-    cursor: 'pointer',
-  }
 
   return (
     <div
-    style={{
-      position: 'fixed',
-      inset: 0,
-      background: '#ffffff',   // 페이지 배경 흰색
-      overflow: 'hidden',
-    }}
-  >
-    <Canvas
-      camera={{ position: [0, 0, 320], fov: 40 }}
-      gl={{ antialias: true, alpha: true }}
-      onCreated={({ gl }) => {
-        gl.setClearColor('#ffffff', 1);  // 캔버스 클리어 컬러도 흰색
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: '#ffffff',
+        overflow: 'hidden',
       }}
-      style={{ width: '100%', height: '100%' }} // 뷰포트 꽉 채우기
     >
-      {/* 초기 각도: 사선, 뒷면 제한은 기존 OrbitControls 설정 그대로 */}
-      <SetCameraToCenter
-        center={mapCenter3D}
-        yawDeg={-35}
-        pitchDeg={62}
-        distance={Math.max(meta.width, meta.height) * 0.9 + 250}
-      />
-
-      <ambientLight intensity={1.5} />
-     <hemisphereLight  color="#ffffff" groundColor="#f4f4f4" intensity={0.9} />
-      <directionalLight position={[300, 400, 800]} intensity={1.4} />
-      <directionalLight position={[-300, 200, 600]} intensity={1.0} />
-
-      <OrbitControls
-        ref={controlsRef}
-        enableRotate
-        enableZoom
-        enablePan
-        enableDamping
-        dampingFactor={0.08}
-        minPolarAngle={THREE.MathUtils.degToRad(25)}
-        maxPolarAngle={THREE.MathUtils.degToRad(80)}
-        minDistance={Math.max(meta.width, meta.height) * 0.3}
-        maxDistance={Math.max(meta.width, meta.height) * 2.0}
-      />
-      <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
-
-      <WallMesh data={shapeData} wallHeight={35} />
-
-      {redDotPos && (
-        <PoseMarker3D
-        position={redDotPos}
-        coreRadius={1.6}
-        haloWorldSize={10}
-        pulseCount={3}
-        pulseFrom={2}
-        pulseTo={13}
-        pulseSpeed={0.4}
+      <Canvas
+        camera={{ position: [0, 0, 320], fov: 40 }}
+        gl={{ antialias: true, alpha: true }}
+        onCreated={({ gl }) => {
+          gl.setClearColor('#ffffff', 1);
+        }}
+        style={{ width: '100%', height: '100%' }}
+      >
+        <SetCameraToCenter
+          center={mapCenter3D}
+          yawDeg={-35}
+          pitchDeg={62}
+          distance={Math.max(meta.width, meta.height) * 0.9 + 250}
         />
-      )}
-    </Canvas>
-  </div>
+
+        <ambientLight intensity={1.5} />
+        <hemisphereLight  color="#ffffff" groundColor="#f4f4f4" intensity={0.9} />
+        <directionalLight position={[300, 400, 800]} intensity={1.4} />
+        <directionalLight position={[-300, 200, 600]} intensity={1.0} />
+
+        <OrbitControls
+          ref={controlsRef}
+          enableRotate
+          enableZoom
+          enablePan
+          enableDamping
+          dampingFactor={0.08}
+          minPolarAngle={THREE.MathUtils.degToRad(25)}
+          maxPolarAngle={THREE.MathUtils.degToRad(80)}
+          minDistance={Math.max(meta.width, meta.height) * 0.3}
+          maxDistance={Math.max(meta.width, meta.height) * 2.0}
+        />
+        <SetControlsTarget controlsRef={controlsRef} target={mapCenter3D} />
+        
+        {/* Wall and Obstacle Meshes */}
+        <WallMesh data={shapeData} wallHeight={35} />
+        <ObstacleMesh data={obstacleData} obstacleHeight={25} /> {/* <--- [NEW] Render obstacles */}
+        
+        {redDotPos && (
+          <PoseMarker3D
+            position={redDotPos}
+            coreRadius={1.6}
+            haloWorldSize={10}
+            pulseCount={3}
+            pulseFrom={2}
+            pulseTo={13}
+            pulseSpeed={0.4}
+          />
+        )}
+      </Canvas>
+    </div>
   )
 }
