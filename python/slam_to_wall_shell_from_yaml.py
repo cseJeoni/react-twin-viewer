@@ -1,3 +1,4 @@
+# python/slam_to_wall_shell_from_yaml.py (수정된 버전)
 import json
 from pathlib import Path
 import cv2
@@ -5,6 +6,7 @@ import numpy as np
 import yaml
 
 # ===== 경로/설정 =====================================================
+# 이전에 수정한 파라미터들은 원래 값으로 되돌리는 것이 좋습니다.
 BASE_DIR     = Path(__file__).resolve().parent
 CONFIG_PATH  = (BASE_DIR.parent / "public" / "map-config.json").resolve()
 OUTPUT_DIR   = (BASE_DIR.parent / "public").resolve()
@@ -12,22 +14,39 @@ OUT_WALL     = OUTPUT_DIR / "wall_shell.json"
 OUT_META     = OUTPUT_DIR / "meta.json"
 OUT_OBSTACLES = OUTPUT_DIR / "obstacles.json"
 
-# ===== 외곽/윤곽 추출 파라미터 --------------------------------------
+# ===== 외곽/윤곽 추출 파라미터 (기본값으로 복원 권장) ----------------
 CLOSE_KERNEL_SIZE     = 5
 CLOSE_ITER            = 2
 AREA_MIN_RATIO        = 0.01
 APPROX_EPS_RATIO      = 0.004
-OBSTACLE_MIN_AREA_PX  = 30      # 장애물로 인정할 최소 픽셀 면적
+OBSTACLE_MIN_AREA_PX  = 30
 
 # ----- 벽 두께(픽셀 단위) ------------------------------------------
 DEFAULT_WALL_THICK_PX = 6.5
 
-# ----- [신규] 회색 장애물 감지 임계값 -------------------------------
-# 픽셀값이 이 범위 사이에 있으면 '회색'으로 간주합니다.
-# SLAM 맵의 회색은 보통 205 근처 값이지만, 범위를 넓게 잡습니다.
+# ----- 회색 장애물 감지 임계값 -------------------------------
 GRAY_THRESHOLD_LOW = 50
 GRAY_THRESHOLD_HIGH = 220
 # --------------------------------------------------------------------
+
+
+# --- [변경됨] 새로운 바닥 추출 함수 ---
+def extract_floor_inner(gray: np.ndarray):
+    """
+    '섬' 형태의 맵을 위해 로직을 변경합니다.
+    Floodfill 방식 대신, 이미지에서 가장 밝은(흰색) 영역을 직접 찾습니다.
+    """
+    # 1. 거의 순수한 흰색(250-255)에 해당하는 픽셀만 선택하여 바닥 마스크를 생성합니다.
+    #    SLAM 맵에서 바닥은 보통 가장 밝은 값을 가집니다.
+    floor_mask = cv2.inRange(gray, 250, 255)
+    
+    # 2. 바닥 내부의 작은 검은색 노이즈나 구멍을 메우기 위해 모폴로지 연산을 수행합니다.
+    #    이전 로직의 CLOSE_KERNEL_SIZE, CLOSE_ITER를 여기서 활용합니다.
+    kern = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_KERNEL_SIZE, CLOSE_KERNEL_SIZE))
+    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kern, iterations=CLOSE_ITER)
+    
+    return floor_mask
+# --- [여기까지 변경] ---
 
 
 def load_config_profile(config_path: Path) -> dict:
@@ -64,30 +83,6 @@ def approx_poly_from_contour(contour: np.ndarray, eps_ratio: float):
     approx = cv2.approxPolyDP(contour, eps, True)
     return approx.reshape(-1, 2).astype(float).tolist()
 
-def extract_floor_inner(gray: np.ndarray):
-    # Otsu 이진화를 사용해 명확한 벽과 바닥을 구분합니다.
-    _, bw = cv2.threshold(gray, GRAY_THRESHOLD_HIGH, 255, cv2.THRESH_BINARY)
-    
-    # 모폴로지 연산으로 맵의 작은 틈이나 노이즈를 정리합니다.
-    kern = cv2.getStructuringElement(cv2.MORPH_RECT, (CLOSE_KERNEL_SIZE, CLOSE_KERNEL_SIZE))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kern, iterations=CLOSE_ITER)
-    
-    h, w = bw.shape
-    tmp = bw.copy()
-    ffmask = np.zeros((h + 2, w + 2), np.uint8)
-    
-    # 이미지 가장자리에서 Flood Fill을 시작하여 외부 공간을 식별합니다.
-    for x in range(w):
-        if tmp[0, x] == 255: cv2.floodFill(tmp, ffmask, (x, 0), 128)
-        if tmp[h-1, x] == 255: cv2.floodFill(tmp, ffmask, (x, h-1), 128)
-    for y in range(h):
-        if tmp[y, 0] == 255: cv2.floodFill(tmp, ffmask, (0, y), 128)
-        if tmp[y, w-1] == 255: cv2.floodFill(tmp, ffmask, (w-1, y), 128)
-        
-    # 외부 공간(128)을 제외한 나머지 흰색 영역이 우리가 원하는 바닥(floor)입니다.
-    floor_mask = np.where(tmp == 255, 255, 0).astype(np.uint8)
-    return floor_mask
-
 def find_largest_polygon(mask: np.ndarray, eps_ratio: float, area_min_ratio: float):
     h, w = mask.shape
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -96,21 +91,12 @@ def find_largest_polygon(mask: np.ndarray, eps_ratio: float, area_min_ratio: flo
     if cv2.contourArea(main_contour) < (h * w * area_min_ratio): return None
     return approx_poly_from_contour(main_contour, eps_ratio)
 
-# <--- [신규] 회색 장애물 감지 함수 ---
 def find_gray_obstacles(gray_img: np.ndarray, floor_mask: np.ndarray, eps_ratio: float, min_area_px: float):
-    # 1. 정의된 임계값(GRAY_THRESHOLD_LOW ~ HIGH) 사이의 픽셀만 추출하여 회색 영역 마스크 생성
     gray_obstacle_mask = cv2.inRange(gray_img, GRAY_THRESHOLD_LOW, GRAY_THRESHOLD_HIGH)
-    
-    # 2. 바닥(floor) 영역 내부에 있는 회색 영역만 남김
     gray_inside_floor = cv2.bitwise_and(gray_obstacle_mask, floor_mask)
-    
-    # 3. 작은 노이즈 제거
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     cleaned_mask = cv2.morphologyEx(gray_inside_floor, cv2.MORPH_OPEN, kernel, iterations=1)
-    
-    # 4. 윤곽선(contour) 찾기
     contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
     obstacles = []
     for contour in contours:
         if cv2.contourArea(contour) > min_area_px:
@@ -124,7 +110,7 @@ def find_hole_obstacles(mask: np.ndarray, eps_ratio: float, min_area_px: float):
     obstacles = []
     if hierarchy is None: return obstacles
     for i, h in enumerate(hierarchy[0]):
-        if h[3] != -1: # Parent가 있는 contour == hole
+        if h[3] != -1:
             contour = contours[i]
             if cv2.contourArea(contour) > min_area_px:
                 poly = approx_poly_from_contour(contour, eps_ratio)
@@ -141,7 +127,6 @@ def dilate_mask(mask: np.ndarray, px: int):
 def main():
     try:
         prof = load_config_profile(CONFIG_PATH)
-
         if "yaml" in prof and prof["yaml"]:
             yaml_path = resolve_from_config(prof["yaml"])
             if not yaml_path.exists(): raise FileNotFoundError(f"YAML 파일을 찾을 수 없습니다: {yaml_path}")
@@ -169,10 +154,8 @@ def main():
             raise RuntimeError("outer 폴리곤을 생성하지 못했습니다.")
 
         print("\n장애물 추출 중...")
-        # [수정] 두 가지 방법으로 장애물 추출 후 결과 합치기
         hole_obstacles = find_hole_obstacles(floor_mask, APPROX_EPS_RATIO, OBSTACLE_MIN_AREA_PX)
         gray_obstacles = find_gray_obstacles(gray, floor_mask, APPROX_EPS_RATIO, OBSTACLE_MIN_AREA_PX)
-        
         obstacle_polys = hole_obstacles + gray_obstacles
         print(f"  - 검은 구멍: {len(hole_obstacles)}개 / 회색 영역: {len(gray_obstacles)}개")
         print(f"  → 총 장애물: {len(obstacle_polys)}개")
@@ -182,10 +165,7 @@ def main():
             json.dump({"outer": outer_poly, "inner": inner_poly, "wall_px": wall_px}, f, ensure_ascii=False)
         with open(OUT_OBSTACLES, "w", encoding="utf-8") as f:
             json.dump({"obstacles": obstacle_polys}, f, ensure_ascii=False)
-        meta = {
-            "width": int(gray.shape[1]), "height": int(gray.shape[0]),
-            "resolution": float(resolution), "origin": origin, "rotateCCW90": False
-        }
+        meta = { "width": int(gray.shape[1]), "height": int(gray.shape[0]), "resolution": float(resolution), "origin": origin, "rotateCCW90": False }
         with open(OUT_META, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
 
